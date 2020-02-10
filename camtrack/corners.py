@@ -72,8 +72,8 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 x, y = arr
                 cv2.circle(mask, (x, y), feature_params['minDistance'], 0, -1)
             new_centers = cv2.goodFeaturesToTrack(image_1, mask=mask, **feature_params)
-            add_length = min(feature_params['maxCorners'] - len(ids), len(new_centers))
             if new_centers is not None:
+                add_length = min(feature_params['maxCorners'] - len(ids), len(new_centers))
                 ids = np.concatenate([ids, np.arange(next_id, next_id + add_length)])
                 p0 = np.concatenate([p0, new_centers[:add_length].squeeze(-2)])
                 next_id += add_length
