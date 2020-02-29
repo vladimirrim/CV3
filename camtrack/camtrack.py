@@ -54,7 +54,7 @@ class CameraTracker:
         return len(ids)
 
     def track(self):
-        for cur_index in range(1, self._length):
+        for cur_index in range(self._length):
             print(f'Processing frame {cur_index}/{self._length}')
             corners = self._corner_storage[cur_index]
             ids = []
@@ -68,16 +68,18 @@ class CameraTracker:
                 object_points.append(self._builder.points[indices_x[0]])
                 image_points.append(point)
             if len(object_points) < 5:
-                return None
+                continue
             retval, rvec, tvec, inliers = cv2.solvePnPRansac(np.array(object_points), np.array(image_points),
                                                              self._intrinsic_mat, None, flags=cv2.SOLVEPNP_EPNP)
             if not retval:
-                return None
+                continue
             view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
             print(f'Position based on {len(inliers)} inliers')
             self._track[cur_index] = view_mat
             updatesCount = sum([self._update_cloud(cur_index, next_index) for next_index in range(cur_index)])
             print(f'Points updated:{updatesCount} Current cloud size:{len(self._builder.ids)}')
+        for i in range(len(self._track)):
+            self._track[i] = self._track[i] if self._track[i] is not None else self._track[i - 1]
         return np.array(self._track), self._builder
 
 
