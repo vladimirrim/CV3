@@ -21,6 +21,8 @@ from _camtrack import (
     pose_to_view_mat3x4,
     TriangulationParameters,
     build_correspondences,
+    eye3x4,
+    remove_correspondences_with_ids,
     triangulate_correspondences,
     rodrigues_and_translation_to_view_mat3x4
 )
@@ -38,9 +40,12 @@ class CameraTracker:
         self._builder = PointCloudBuilder()
         self._track = [None] * self._length
 
-        self._track[known_view_1[0]] = pose_to_view_mat3x4(known_view_1[1])
-        self._track[known_view_2[0]] = pose_to_view_mat3x4(known_view_2[1])
-        self._update_cloud(known_view_1[0], known_view_2[0])
+        if known_view_1 is None or known_view_2 is None:
+            self._init_on_best_pair()
+        else:
+            self._track[known_view_1[0]] = pose_to_view_mat3x4(known_view_1[1])
+            self._track[known_view_2[0]] = pose_to_view_mat3x4(known_view_2[1])
+            self._update_cloud(known_view_1[0], known_view_2[0])
 
     def _update_cloud(self, ind1, ind2):
         frame1, frame2 = self._corner_storage[ind1], self._corner_storage[ind2]
@@ -52,6 +57,47 @@ class CameraTracker:
                                                      self._intrinsic_mat, self._triangulation_parameters)
         self._builder.add_points(ids, points)
         return len(ids)
+
+    def _init_on_two_frames(self, frame1, frame2):
+        best_pose, best_size = None, 0
+        correspondences = build_correspondences(frame1, frame2)
+        if len(correspondences.ids) < 6:
+            return best_pose, best_size
+        H, h_mask = cv2.findHomography(correspondences.points_1, correspondences.points_2,
+                                       method=cv2.RANSAC, ransacReprojThreshold=1., confidence=0.999)
+        if np.sum(h_mask) > 0.9 * len(correspondences.points_1):
+            return best_pose, best_size
+        E, e_mask = cv2.findEssentialMat(correspondences.points_1, correspondences.points_2,
+                                         cameraMatrix=self._intrinsic_mat, method=cv2.RANSAC, prob=0.999, threshold=1.)
+        if E is None or E.shape != (3, 3):
+            return best_pose, best_size
+        correspondences = remove_correspondences_with_ids(correspondences, np.where(e_mask == 0)[0])
+        R1, R2, translation = cv2.decomposeEssentialMat(E)
+        for R in [R1, R2]:
+            for t in [translation, -translation]:
+                pose = Pose(R.T, R.T @ t)
+                mat1 = eye3x4()
+                mat2 = pose_to_view_mat3x4(pose)
+                _, ids, _ = triangulate_correspondences(correspondences, mat1, mat2,
+                                                        self._intrinsic_mat, self._triangulation_parameters)
+                if best_size < len(ids):
+                    best_pose, best_size = pose, len(ids)
+        return best_pose, best_size
+
+    def _init_on_best_pair(self):
+        best_index, best_size, best_pose = None, -1, None
+        for idx in range(1, self._length):
+            pose, numPoints = self._init_on_two_frames(self._corner_storage[0], self._corner_storage[idx])
+            if numPoints == 0:
+                continue
+            print(f'Found {numPoints} points for frame {idx}')
+            if numPoints > best_size:
+                best_index = idx
+                best_pose = pose
+                best_size = numPoints
+        self._track[0] = eye3x4()
+        self._track[best_index] = pose_to_view_mat3x4(best_pose)
+        self._update_cloud(0, best_index)
 
     def track(self):
         for cur_index in range(self._length):
@@ -89,7 +135,7 @@ def _track_camera(corner_storage: CornerStorage,
                   known_view_1: Tuple[int, Pose],
                   known_view_2: Tuple[int, Pose]) \
         -> Optional[Tuple[List[np.ndarray], PointCloudBuilder]]:
-    parameters = TriangulationParameters(max_reprojection_error=1., min_triangulation_angle_deg=2., min_depth=0.1)
+    parameters = TriangulationParameters(max_reprojection_error=5., min_triangulation_angle_deg=1., min_depth=0.1)
     return CameraTracker(corner_storage, intrinsic_mat, parameters, known_view_1, known_view_2).track()
 
 
@@ -99,9 +145,6 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
-    if known_view_1 is None or known_view_2 is None:
-        raise NotImplementedError()
-
     rgb_sequence = frameseq.read_rgb_f32(frame_sequence_path)
     intrinsic_mat = to_opencv_camera_mat3x3(
         camera_parameters,
